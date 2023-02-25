@@ -1,33 +1,6 @@
 using Test
 
-using DifferentialEquations
-
 using MPhil.StochasticSensitivity
-
-@testset "star grid" begin
-    """
-    Check that the star grid computation is correct, given a point x and perturbation δx.
-    """
-    x = [1.0, 2.0, 3.0]
-    δx = 0.01
-
-    sg = star_grid(x, δx)
-
-    @test sg == [1.01 2.0 3.0; 0.99 2.0 3.0; 1.0 2.01 3.0; 1.0 1.99 3.0; 1.0 2.0 3.01; 1.0 2.0 2.99]
-end
-
-@testset "gradient approximation" begin
-    """
-    Check that the finite-difference approximation of ∇F gives the right calculation, given values of
-    the stargrid.
-    """
-    δx = 1.0
-    star = [[2.0 0.0]; [0.8 0.2]; [1.6 0.6]; [1.4 -0.2]]
-
-    expected = [[0.6 0.1]; [-0.1 0.4]]
-
-    @test isapprox(∇F(star, 2, δx), expected, atol = 1e-10)
-end
 
 @testset "Σ_calculation errors" begin end
 
@@ -55,7 +28,7 @@ end
     ]
 
     # Test each method
-    for method in ["fd", "eov"]#, "ode"]
+    for method in ["fd", "eov", "ode"]
         # Test full w, Σ calculation
         w, Σ = Σ_calculation(u, σf, x, 0, t, 0.001, 0.001; method = method, ∇u = ∇u)
 

@@ -1,6 +1,6 @@
 module StochasticSensitivity
 include("covariance.jl")
 
-export Σ_calculation, star_grid, ∇F
+export Σ_calculation
 
 end

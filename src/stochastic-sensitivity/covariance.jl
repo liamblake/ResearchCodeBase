@@ -2,62 +2,7 @@ using LinearAlgebra
 
 using DifferentialEquations
 
-"""
-	star_grid(x, δx)
-Construct a star grid around a point x, for calculating a finite difference
-approximation of a spatial derivative. The number of points in the grid is
-determined from the dimension of x; if the length of x is n, then 2n points are
-calculated.
-"""
-function star_grid(x::AbstractVector, δx::Real)
-    n = length(x)
-
-    # Matrix of coordinate shifts
-    # ⌈1  0  0  0  ⋯ 0⌉
-    # |-1 0  0  0  ⋯ 0|
-    # |0  1  0  0  ⋯ 0|
-    # |0  -1 0  0  ⋯ 0|
-    # |⋮     ⋱       ⋮|
-    # |0  ⋯     0  ⋯ 1|
-    # ⌊0  ⋯     0  ⋯ 0⌋
-    A = zeros(2 * n, n)
-    A[1:(2 * n + 2):(2 * n^2)] .= 1
-    A[2:(2 * n + 2):(2 * n^2)] .= -1
-
-    return repeat(x', 2 * n) + δx * A
-end
-
-"""
-    ∇F(star_values, n, δx)
-Approximate the flow map gradient with a centered finite-difference approximation, given a star grid of values.
-"""
-function ∇F(star_values, n, δx)
-    return 1 / (2 * δx) * (star_values[1:2:(2 * n), :] - star_values[2:2:(2 * n), :])'
-end
-
-"""
-    ∇F_eov!(dest, ∇u, d, t₀, T, dt)
-Calculate the flow map gradient by directly solving the equation of variations,
-given the corresponding trajectory. The equation of variations is
-	∂∇F/∂t = ∇u(F(t), t)∇F.
-The gradient of the flow map is taken with respect to the initial condition at time
-t₀. A vector of matrices, corresponding to the flow map gradient at time steps at dt,
-is placed in the preallocated dest vector.
-"""
-function ∇F_eov!(dest, ∇u, d, t₀, T, dt)
-    # Inplace definition of the ODE
-    function rate(x, _, t)
-        dx = ∇u(t) * x
-        return dx
-    end
-
-    Id = zeros(d, d)
-    Id[diagind(Id)] .= 1.0
-    u₀ = Id
-
-    prob = ODEProblem(rate, u₀, (t₀, T))
-    dest[:] = solve(prob; saveat = dt).u
-end
+using ..FiniteDiffs
 
 """
 	Σ_calculation(model, x₀, t₀, T, dt)
