@@ -9,6 +9,7 @@ using MPhil.FiniteDiffs
     # Define velocity
     A = [1.0 0.0; 0.0 2.3]
     u = (x, _, _) -> A * x
+    ∇u = (_, _) -> A
 
     xs = [1.1 -0.2; 5.2 0.1; 0.5 -9.0]
     ts = [0.2, 0.5, 0.9]
@@ -24,6 +25,8 @@ using MPhil.FiniteDiffs
         end
     end
 
-    ∇Fs = ∇F_fd(u, xs, ts, 0.001)
-    @test isapprox(∇Fs, ∇Fes, atol = 1e-3)
+    for method in ["fd", "eov"]
+        ∇Fs = ∇F(u, xs, ts, 0.001; method = method, ∇u = ∇u)
+        @test isapprox(∇Fs, ∇Fes, atol = 1e-3)
+    end
 end
