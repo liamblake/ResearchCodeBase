@@ -66,7 +66,7 @@ Calculate the deviation covariance matrix Σ with an in-place specification of t
 function Σ_calculation(
     velocity::Function,
     σ::Function,
-    x₀::AbstractVector,
+    x₀,
     t₀::Real,
     T::Real,
     dt::Real,
