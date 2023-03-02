@@ -14,17 +14,16 @@ function Σ_calculation(
     x₀::AbstractVector,
     t₀::Real,
     T::Real,
-    dt::Real,
-    dx::Real;
-    method::String = "fd",
+    dt::Real;
+    method::String = "∇F",
+    ∇F_method::String = "fd",
+    δx::Real = nothing,
     ∇u::Function = nothing,
     ode_solver = Euler(),
+    ∇F_kwargs...,
 )
+    # TODO: Vectorise across the initial condition
     d = length(x₀)
-
-    if !(method in ["fd", "ode", "eov"])
-        ArgumentError("method must be one of \"fd\", \"ode\" or \"eov\", got $(method).")
-    end
 
     ts = t₀:dt:T
     if last(ts) < T
@@ -56,44 +55,14 @@ function Σ_calculation(
         sol = solve(prob, ode_solver; dt = dt, dtmax = dt, save_everystep = false)
 
         Σ = sol[2][2]
-    else
-        # Calculate the flow map gradients by solving the equation of variations directly
-        if method == "eov"
-            if ∇u === nothing
-                ArgumentError("Must specify ∇u to use the Equation of Variations (eov) method.")
-            end
 
-            ∇u_F = t -> ∇u(det_sol(t), t)
-            ∇Fs = Vector{Matrix{Float64}}(undef, length(ts))
-            ∇F_eov!(∇Fs, ∇u_F, d, t₀, T, dt)
-        elseif method == "fd"
-            # Use the star grid method to approximate the flow map
-
-            # Form the star grid around the initial position
-            star = star_grid(x₀, dx)
-
-            # Advect these points forwards to the initial time
-            prob = ODEProblem(velocity, star[1, :], (t₀, T))
-            ensemble =
-                EnsembleProblem(prob; prob_func = (prob, i, _) -> remake(prob; u0 = star[i, :]))
-            sol = solve(
-                ensemble,
-                ode_solver,
-                EnsembleThreads();
-                dt = dt,
-                dtmax = dt,
-                saveat = ts,
-                trajectories = 2 * d,
-            )
-
-            # Permute the dimensions of the ensemble solution so star_values is indexed
-            # as (timestep, gridpoint, coordinate).
-            star_values = Array{Float64}(undef, length(sol[1]), 2 * d, d)
-            permutedims!(star_values, Array(sol), [2, 3, 1])
-
-            # Approximate the flow map gradient at each time step
-            ∇Fs = ∇F.(eachslice(star_values; dims = 1), d, dx)
+    elseif method == "∇F"
+        if ∇F_method == "fd" && δx === nothing
+            ArgumentError("Must specify δx to use ∇F method with finite-difference.")
         end
+
+        ∇Fs = Array{Float64}(undef, 1, length(ts))
+        ∇F!(∇Fs, velocity, x₀, ts; δx = δx, t₀ = 0, method = ∇F_method, ∇u = ∇u, ∇F_kwargs...)
 
         # Evaluate σ along the trajectory
         σs = σ.(det_sol.(ts), nothing, ts)
@@ -109,6 +78,9 @@ function Σ_calculation(
         fodd = @view integrand[1:2:end]
 
         Σ = dt / 3 * (integrand[1] + 2 * sum(feven) + 4 * sum(fodd) + last(integrand))
+
+    else
+        ArgumentError("method must be one of \"∇F\" or \"ode\" but got $(method).")
     end
 
     return w, Σ

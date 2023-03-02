@@ -13,7 +13,7 @@ The gradient of the flow map is taken with respect to the initial condition at t
 t₀. A vector of matrices, corresponding to the flow map gradient at time steps at dt,
 is placed in the preallocated dest vector.
 """
-function ∇F!(dest, u, x₀, ts, δx; t₀ = 0, method = "fd", ∇u = nothing, solver...)
+function ∇F!(dest, u, x₀, ts; δx = nothing, t₀ = 0, method = "fd", ∇u = nothing, solver...)
     if ndims(x₀) == 0
         # Scalar, convert to matrix
         x₀ = [x₀;;]
@@ -100,8 +100,8 @@ end
     ∇F(u, x₀, ts, δx; t₀ = 0, solver...)
 Out-of-place version of ∇F!
 """
-function ∇F(u, x₀, ts, δx; t₀ = 0, method = "fd", solver...)
+function ∇F(u, x₀, ts; δx = nothing, t₀ = 0, method = "fd", ∇u = nothing, solver...)
     ∇Fs = Array{Matrix}(undef, size(x₀)[1], length(ts))
-    ∇F!(∇Fs, u, x₀, ts, δx; t₀ = t₀, method = method, solver...)
+    ∇F!(∇Fs, u, x₀, ts; δx = δx, t₀ = t₀, method = method, ∇u = nothing, solver...)
     return ∇Fs
 end
