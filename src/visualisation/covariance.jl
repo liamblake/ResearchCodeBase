@@ -1,3 +1,6 @@
+using LinearAlgebra
+
+using CairoMakie
 
 """
 	bivariate_gaussian_std_dev(ax, μ, Σ; nσ = 1, colour = :black, label = nothing, kwargs...)
