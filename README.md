@@ -12,5 +12,7 @@ Within the main module `MPhil`, everything is loosely organised into submodules:
 
 - `OceanData`: Manipiulation and processing of oceanography data, e.g. geostrophic velocity data.
 
+- `Visualisation`: Tools for various visualisation of results with [`Makie.jl`](https://docs.makie.org/stable/).
+
 See within each subdirectory of `src` for more details.
 

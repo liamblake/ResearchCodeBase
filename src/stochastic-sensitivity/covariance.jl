@@ -72,7 +72,7 @@ function Σ_calculation(
     dt::Real,
     dx::Real;
     method::String = "fd",
-    ∇u::Function = nothing,
+    ∇u::Union{Function,Nothing} = nothing,
     ode_solver = Euler(),
 )
     d = length(x₀)
