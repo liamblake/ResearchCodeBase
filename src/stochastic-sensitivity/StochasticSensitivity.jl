@@ -1,6 +1,8 @@
 module StochasticSensitivity
+include("structs.jl")
 include("covariance.jl")
 
-export Σ_calculation, star_grid, ∇F
+export SDEModel, SpatioTemporalInfo
+export compute_Σ!, compute_Σ, star_grid, ∇F
 
 end

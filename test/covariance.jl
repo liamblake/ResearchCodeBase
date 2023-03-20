@@ -39,9 +39,9 @@ end
     # Define OU process
     A = [1.0 0.0; 0.0 2.3]
     σ = [1.0 0.5; -0.2 1.4]
-    u = (x, _, _) -> A * x
+    u = (x, _) -> A * x
     ∇u = (x, t) -> A
-    σf = (_, _, _) -> σ
+    σf = (_, _) -> σ
 
     x = [1.1, -0.2]
     t = 1.5
@@ -55,12 +55,49 @@ end
     ]
 
     # Test each method
-    for method in ["fd", "eov"]#, "ode"]
+    for method in ["flow map", "backwards flow map", "ode rk4"]
         # Test full w, Σ calculation
-        w, Σ = Σ_calculation(u, σf, x, 0, t, 0.001, 0.001; method = method, ∇u = ∇u)
+        w, Σ, _, _ = compute_Σ(
+            SDEModel(2, u, ∇u, σf),
+            SpatioTemporalInfo([x], 0:0.001:t, 0.001, 0.001),
+            method,
+        )
 
-        @test isapprox(w, Fe, atol = 1e-0)
-        # TODO: Fix tolerances
-        @test_skip isapprox(Σ, Σe, atol = 1e-0)
+        @test w[:, 1] == [x]
+        @test isapprox(w[1, end], Fe, atol = 1e-1)
+        @test Σ[:, 1] == [zeros(2, 2)]
+        @test isapprox(Σ[1, end], Σe, atol = 1e-1) broken = (method == "backwards flow map")
+    end
+end
+
+@testset "GBM 1D" begin
+    # Define GBM process
+    a = 1.1
+    b = 0.29
+    u = (x, _) -> a * x
+    ∇u = (x, t) -> [a]
+    σ = (x, _) -> b * x
+
+    x = 1.1
+    t = 1.5
+
+    # Exact forms of terms involved
+    Fe = [x * exp(a * t)]
+    ∇Fe = [exp(a * t);;]
+    Σe = [t * b^2 * x^2 * exp(2 * a * t);;]
+
+    # Test each method
+    for method in ["flow map", "backwards flow map", "ode rk4"]
+        # Test full w, Σ calculation
+        w, Σ, _, _ = compute_Σ(
+            SDEModel(1, u, ∇u, σ),
+            SpatioTemporalInfo([[x]], 0:0.001:t, 0.001, 0.001),
+            method,
+        )
+
+        @test w[:, 1] == [[x]]
+        @test isapprox(w[1, end], Fe, atol = 1e-2)
+        @test Σ[:, 1] == [[0.0;;]]
+        @test isapprox(Σ[1, end], Σe, atol = 1e-2)
     end
 end
