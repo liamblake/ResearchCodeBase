@@ -1,6 +1,124 @@
 using LinearAlgebra
 
 using DifferentialEquations
+using Parameters
+
+struct SDEModel
+    d::Int
+    u::Function
+    ∇u::Function
+    σ::Function
+end
+
+struct SpatioTemporalInfo
+    x₀s::AbstractVector
+    ts::AbstractVector
+    dt::Float64
+    dx::Float64
+end
+
+"""
+Stochastic sensitivity results for a fixed initial condition and time. Note that the initial
+condition and time are not stored in the struct, and so should be tracked elsewhere. Use the
+constructor below to automatically compute projected values.
+"""
+struct SSResults2D
+    w::Vector
+    Σ::Matrix
+    eigens::Vector
+    θs::Vector
+
+    function SSResults2D(w, Σ)
+        if !issymmetric(Σ)
+            ArgumentError("Covariance matrix Σ must be symmetric.")
+        end
+
+        E = eigen(Σ; sortby = λ -> (-real(λ), imag(λ)))
+
+        if any(E.values .< 0)
+            ArgumentError(
+                "Covariance matrix Σ must be positive semi-definite, but Σ has eigenvalues $(E.values).",
+            )
+        end
+
+        new(w, Σ, E.values, atan.(E.vectors[2, :], E.vectors[1, :]))
+    end
+end
+
+"""
+compute_Σ!(
+    w_dest,
+    Σ_dest,
+    eval_dest,
+    θ_dest,
+    model::SDEModel,
+    st_info::SpatioTemporalInfo,
+    method;
+    kwargs...
+)
+
+Calculate a deterministc trajectory and corresponding covariance matrices, at times specified by
+ts, using one of several different methods.
+
+Available methods are:
+    - Flow map: Use the forwards version of the flow-map integral expression for
+"""
+function compute_Σ!(
+    w_dest,
+    Σ_dest,
+    eval_dest,
+    θ_dest,
+    model::SDEModel,
+    st_info::SpatioTemporalInfo,
+    method;
+    kwargs...,
+)
+    if method == "flow map"
+        Σ_flow_map!(
+            w_dest,
+            Σ_dest,
+            eval_dest,
+            θ_dest,
+            model,
+            st_info;
+            backwards = false,
+            eov = false,
+            kwargs...,
+        )
+    elseif method == "backwards flow map"
+        Σ_flow_map!(
+            w_dest,
+            Σ_dest,
+            eval_dest,
+            θ_dest,
+            model,
+            st_info;
+            backwards = true,
+            eov = false,
+            kwargs...,
+        )
+    elseif method == "flow map eov"
+        Σ_flow_map!(
+            w_dest,
+            Σ_dest,
+            eval_dest,
+            θ_dest,
+            model,
+            st_info;
+            backwards = true,
+            eov = true,
+            kwargs...,
+        )
+    elseif method == "ode"
+        Σ_ode_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model, st_info; kwargs...)
+    elseif method == "ldl ode"
+        Σ_ldl_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model, st_info; kwargs...)
+    else
+        ArgumentError("Invalid method for computing Σ... got $(method)")
+    end
+
+    nothing
+end
 
 """
 	star_grid(x, δx)
@@ -63,108 +181,293 @@ end
 	Σ_calculation(model, x₀, t₀, T, dt)
 Calculate the deviation covariance matrix Σ with an in-place specification of the velocity field.
 """
-function Σ_calculation(
-    velocity::Function,
-    σ::Function,
-    x₀,
-    t₀::Real,
-    T::Real,
-    dt::Real,
-    dx::Real;
-    method::String = "fd",
-    ∇u::Union{Function,Nothing} = nothing,
-    ode_solver = Euler(),
+function Σ_flow_map!(
+    w_dest,
+    Σ_dest,
+    eval_dest,
+    θ_dest,
+    model::SDEModel,
+    st_info::SpatioTemporalInfo;
+    ode_solver = RK4(),
+    backwards = false,
+    eov = false,
+    solver_opts...,
 )
-    d = length(x₀)
+    @unpack d, u, σ = model
+    @unpack x₀s, ts, dt, dx = st_info
+    n = size(x₀s)[1]
 
-    if !(method in ["fd", "ode", "eov"])
-        ArgumentError("method must be one of \"fd\", \"ode\" or \"eov\", got $(method).")
-    end
+    t₀ = minimum(ts)
+    T = maximum(ts)
 
-    ts = t₀:dt:T
-    if last(ts) < T
-        ts = range(t₀; stop = T, length = length(ts) + 1)
-    end
+    @inbounds for (j, x₀) in enumerate(x₀s)
+        # Generate the required flow map data
+        # First, advect the initial condition forward to obtain the final position
+        prob = ODEProblem((x, _, t) -> u(x, t), x₀, (t₀, T))
+        det_sol = solve(prob, ode_solver; dt = dt, saveat = ts, adaptive = false, solver_opts...)
+        w_dest[j, :] = det_sol.u
 
-    # Generate the required flow map data
-    # First, advect the initial condition forward to obtain the final position
-    prob = ODEProblem(velocity, x₀, (t₀, T))
-    det_sol = solve(prob, ode_solver; dt = dt, dtmax = dt, saveat = ts)
-    w = last(det_sol)
-
-    if method == "ode"
-        # Calculate the covariance by directly solving the differential equation
-        if ∇u === nothing
-            ArgumentError("Must specify ∇u to use the ODE method.")
-        end
-
-        # Solve for the flow map and the covariance matrix as a joint system
-        function joint_F_Σ(x, _, t)
-            traj_∇u = ∇u(x[1], t)
-            traj_σ = σ(x[1], nothing, t)
-
-            du = [velocity(x[1], nothing, t), traj_∇u * x[2] + x[2] * traj_∇u' + traj_σ * traj_σ']
-            return du
-        end
-
-        prob = ODEProblem(joint_F_Σ, [x₀, zeros(d, d)], (t₀, T))
-        sol = solve(prob, ode_solver; dt = dt, dtmax = dt, save_everystep = false)
-
-        Σ = sol[2][2]
-    else
-        # Calculate the flow map gradients by solving the equation of variations directly
-        if method == "eov"
-            if ∇u === nothing
-                ArgumentError("Must specify ∇u to use the Equation of Variations (eov) method.")
-            end
-
-            ∇u_F = t -> ∇u(det_sol(t), t)
-            ∇Fs = Vector{Matrix{Float64}}(undef, length(ts))
-            ∇F_eov!(∇Fs, ∇u_F, d, t₀, T, dt)
-        elseif method == "fd"
-            # Use the star grid method to approximate the flow map
-
-            # Form the star grid around the initial position
-            star = star_grid(x₀, dx)
+        if backwards
+            # Form the star grid around the final position
+            star = star_grid(w_dest[j, end], dx)
 
             # Advect these points forwards to the initial time
-            prob = ODEProblem(velocity, star[1, :], (t₀, T))
+            prob = ODEProblem((x, _, t) -> u(x, t), star[1, :], (T, t₀))
             ensemble =
                 EnsembleProblem(prob; prob_func = (prob, i, _) -> remake(prob; u0 = star[i, :]))
             sol = solve(
                 ensemble,
                 ode_solver,
                 EnsembleThreads();
-                dt = dt,
-                dtmax = dt,
-                saveat = ts,
                 trajectories = 2 * d,
+                dt = dt,
+                saveat = reverse(ts),
+                adaptive = false,
+                solver_opts...,
             )
+        else
+            # Form the star grid around the initial position
+            star = star_grid(x₀, dx)
 
-            # Permute the dimensions of the ensemble solution so star_values is indexed
-            # as (timestep, gridpoint, coordinate).
-            star_values = Array{Float64}(undef, length(sol[1]), 2 * d, d)
-            permutedims!(star_values, Array(sol), [2, 3, 1])
+            # Advect these points forwards to the initial time
+            prob = ODEProblem((x, _, t) -> u(x, t), star[1, :], (t₀, T))
+            ensemble =
+                EnsembleProblem(prob; prob_func = (prob, i, _) -> remake(prob; u0 = star[i, :]))
+            sol = solve(
+                ensemble,
+                ode_solver,
+                EnsembleThreads();
+                trajectories = 2 * d,
+                dt = dt,
+                saveat = ts,
+                adaptive = false,
+                solver_opts...,
+            )
+        end
 
-            # Approximate the flow map gradient at each time step
-            ∇Fs = ∇F.(eachslice(star_values; dims = 1), d, dx)
+        # Permute the dimensions of the ensemble solution so star_values is indexed
+        # as (timestep, gridpoint, coordinate).
+        star_values = Array{Float64}(undef, length(sol[1]), 2 * d, d)
+        permutedims!(star_values, Array(sol), [2, 3, 1])
+
+        # Approximate the flow map gradient at each time step
+        ∇Fs = ∇F.(eachslice(star_values; dims = 1), d, dx)
+        if backwards
+            ∇Fs[end] = Matrix{Float64}(I, d, d)
+            reverse!(∇Fs)
+        else
+            ∇Fs[1] = Matrix{Float64}(I, d, d)
         end
 
         # Evaluate σ along the trajectory
-        σs = σ.(det_sol.(ts), nothing, ts)
+        σs = σ.(det_sol.(ts), ts)
 
         # Evaluate the integrand at each time point.
         # See Theorem 2.2 for the integral form of Σ.
-        Ks = [last(∇Fs)] .* inv.(∇Fs) .* σs
+        Ks = inv.(∇Fs) .* σs
+
         integrand = Ks .* transpose.(Ks)
 
-        # Approximate an integral given discrete evaluations, using the composite Simpson's rule
-        # Assume the data is equidistant with respect to the variable being integrate.
-        feven = @view integrand[2:2:end]
-        fodd = @view integrand[1:2:end]
+        # Approximate the inner integral using the trapezoidal rule
+        Σ_dest[j, 1] = zeros(d, d)
+        prev_val = Σ_dest[j, 1]
+        eval_dest[j, 1] = zeros(d)
+        θ_dest[j, 1] = zeros(d)
+        for i = 2:length(ts)
+            prev_val += 0.5 * abs(ts[i] - ts[i - 1]) * (integrand[i - 1] + integrand[i])
+            Σ_dest[j, i] = prev_val
 
-        Σ = dt / 3 * (integrand[1] + 2 * sum(feven) + 4 * sum(fodd) + last(integrand))
+            if !backwards
+                Σ_dest[j, i] = ∇Fs[i] * Σ_dest[j, i] * transpose(∇Fs[i])
+            end
+
+            # Compute stochastic sensitivity
+            E = eigen(Σ_dest[j, i]; sortby = λ -> (-real(λ), -imag(λ)))
+            eval_dest[j, i] = E.values
+            θ_dest[j, i] = atan.(E.vectors[2, :], E.vectors[1, :])
+        end
+    end
+    nothing
+end
+
+function Σ_ode_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model::SDEModel, st_info::SpatioTemporalInfo)
+    @unpack d, u, ∇u, σ = model
+    @unpack ts, x₀s, dt = st_info
+
+    # Initialise
+    kw1 = Vector{Float64}(undef, d)
+    kw2 = Vector{Float64}(undef, d)
+    kw3 = Vector{Float64}(undef, d)
+    kw4 = Vector{Float64}(undef, d)
+    kΣ1 = Matrix{Float64}(undef, d, d)
+    kΣ2 = Matrix{Float64}(undef, d, d)
+    kΣ3 = Matrix{Float64}(undef, d, d)
+    kΣ4 = Matrix{Float64}(undef, d, d)
+
+    w_dest[:, 1] = x₀s
+    @inbounds for i = 1:(size(Σ_dest)[1])
+        Σ_dest[i] = zeros(d, d)
+        eval_dest[i, 1] = zeros(d)
+        θ_dest[i, 1] = zeros(d)
+
+        kw1 .= 0.0
+        kw2 .= 0.0
+        kw3 .= 0.0
+        kw4 .= 0.0
+        kΣ1 .= 0.0
+        kΣ2 .= 0.0
+        kΣ3 .= 0.0
+        kΣ4 .= 0.0
+
+        @inbounds for j = 2:length(ts)
+            # RK4 method
+            kw1 .= u(w_dest[i, j - 1], ts[j - 1])
+            kw2 .= u(w_dest[i, j - 1] + dt / 2 * kw1, ts[j - 1] + dt / 2)
+            kw3 .= u(w_dest[i, j - 1] + dt / 2 * kw2, ts[j - 1] + dt / 2)
+            kw4 .= u(w_dest[i, j - 1] + dt * kw3, ts[j - 1] + dt)
+            w_dest[i, j] = w_dest[i, j - 1] + dt / 6 * (kw1 + 2 * kw2 + 2 * kw3 + kw4)
+
+            kΣ1 .=
+                ∇u(w_dest[i, j - 1], ts[j - 1]) * Σ_dest[i, j - 1] +
+                Σ_dest[i, j - 1] * transpose(∇u(w_dest[i, j - 1], ts[j - 1])) +
+                σ(w_dest[i, j - 1], ts[j - 1]) * transpose(σ(w_dest[i, j - 1], ts[j - 1]))
+
+            kΣ2 .=
+                ∇u(w_dest[i, j - 1] + dt / 2 * kw1, ts[j - 1] + dt / 2) *
+                (Σ_dest[i, j - 1] + dt / 2 * kΣ1) +
+                (Σ_dest[i, j - 1] + dt / 2 * kΣ1) *
+                transpose(∇u(w_dest[i, j - 1] + dt / 2 * kw1, ts[j - 1] + dt / 2)) +
+                σ(w_dest[i, j - 1] + dt / 2 * kw1, ts[j - 1] + dt / 2) *
+                transpose(σ(w_dest[i, j - 1] + dt / 2 * kw1, ts[j - 1] + dt / 2))
+
+            kΣ3 .=
+                ∇u(w_dest[i, j - 1] + dt / 2 * kw2, ts[j - 1] + dt / 2) *
+                (Σ_dest[i, j - 1] + dt / 2 * kΣ2) +
+                (Σ_dest[i, j - 1] + dt / 2 * kΣ2) *
+                transpose(∇u(w_dest[i, j - 1] + dt / 2 * kw2, ts[j - 1] + dt / 2)) +
+                σ(w_dest[i, j - 1] + dt / 2 * kw2, ts[j - 1] + dt / 2) *
+                transpose(σ(w_dest[i, j - 1] + dt / 2 * kw2, ts[j - 1] + dt / 2))
+
+            kΣ4 .=
+                ∇u(w_dest[i, j - 1] + dt * kw3, ts[j - 1] + dt) * (Σ_dest[i, j - 1] + dt * kΣ3) +
+                (Σ_dest[i, j - 1] + dt * kΣ3) *
+                transpose(∇u(w_dest[i, j - 1] + dt * kw3, ts[j - 1] + dt)) +
+                σ(w_dest[i, j - 1] + dt * kw3, ts[j - 1] + dt) *
+                transpose(σ(w_dest[i, j - 1] + dt * kw3, ts[j - 1] + dt))
+
+            Σ_dest[i, j] = Σ_dest[i, j - 1] + dt / 6 * (kΣ1 + 2 * kΣ2 + 2 * kΣ3 + kΣ4)
+
+            # Compute stochastic sensitivity measures
+            E = eigen(Σ_dest[i, j]; sortby = λ -> (-real(λ), -imag(λ)))
+            eval_dest[i, j] = E.values
+            θ_dest[i, j] = atan.(E.vectors[2, :], E.vectors[1, :])
+        end
+    end
+    nothing
+end
+
+function Σ_ldl_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model::SDEModel, st_info::SpatioTemporalInfo)
+    @unpack d, u, ∇u, σ = model
+    @unpack ts, x₀s, dt = st_info
+
+    @inbounds for (j, x₀) in enumerate(x₀s)
+        w_dest[j, 1] = x₀
+        Σ_dest[j, 1] = zeros(d, d)
+        l = 1
+        D = zeros(2)
+        @inbounds for i = 2:length(ts)
+            # RK4 method
+            w_dest[j, i] = w_dest[j, i - 1] + dt * u(w_dest[j, i - 1], ts[i - 1])
+
+            f = (
+                ∇u(w_dest[j, i - 1], ts[i - 1]) * Σ_dest[i - 1] +
+                Σ_dest[i - 1] * ∇u(w_dest[j, i - 1], ts[i - 1])' +
+                σ(w_dest[j, i - 1], ts[i - 1]) * σ(w_dest[j, i - 1], ts[i - 1])'
+            )
+
+            if i == 1
+                # To ensure no undefined derivatives, use one step of the ODE for Σ
+                Σ_dest[i] = Σ_dest[i - 1] + dt * f
+            else
+                D[1] += dt * f[1, 1]
+                D[2] += dt * (f[2, 2] - 2 * l * f[1, 2] + l^2 * f[1, 1])
+                l += dt * (f[1, 2] - l * f[1, 1])
+
+                Σ_dest[i] = [1 0; l 1] * diagm(D) * [1 l; 0 1]
+            end
+
+            # Compute stochastic sensitivity measures
+            println(Σ_dest[i])
+            E = eigen(Σ_dest[i])
+            eval_dest[j, i] = E.values
+            θ_dest[j, i] = atan.(E.vectors[2, :], E.vectors[1, :])
+        end
     end
 
-    return w, Σ
+    nothing
+end
+
+function Σ_ode_rk4_vectorised!(w_dest, Σ_dest, evals_dest, θ_dest, d, u, ∇u, σ, ts, x₀s, dt)
+    Base.depwarn(
+        "`Σ_ode_rk4_vectorised!` only existed for benchmark comparisons. Use the single interface `compute_Σ` instead.",
+        :Σ_ode_rk4_vectorised!,
+    )
+    # Initialise
+    w_dest[:, 1] = x₀s
+    for i = 1:(size(Σ_dest)[1])
+        Σ_dest[i] = zeros(d, d)
+        evals_dest[i, 1] = zeros(d)
+        θ_dest[i, 1] = zeros(d)
+    end
+
+    for i = 2:length(ts)
+        # Euler's method
+        w_dest[:, i] = w_dest[:, i - 1] + dt * u.(w_dest[:, i - 1], ts[i - 1])
+        Σ_dest[:, i] =
+            Σ_dest[:, i - 1] +
+            dt * (
+                ∇u.(w_dest[:, i - 1], ts[i - 1]) .* Σ_dest[:, i - 1] +
+                Σ_dest[:, i - 1] .* transpose.(∇u.(w_dest[:, i - 1], ts[i - 1])) +
+                σ.(w_dest[:, i - 1], ts[i - 1]) .* transpose.(σ.(w_dest[:, i - 1], ts[i - 1]))
+            )
+
+        # Compute stochastic sensitivity measures
+        Es = eigen.(Σ_dest[:, i], sortby = λ -> (-real(λ), -imag(λ)))
+        get_vals = e -> e.values
+        evals_dest[:, i] = get_vals.(Es)
+        get_θ = e -> atan.(e.vectors[2, :], e.vectors[1, :])
+        θ_dest[:, i] = get_θ.(Es)
+    end
+end
+
+function Σ_ode_rk4_forloop!(w_dest, Σ_dest, evals_dest, θ_dest, d, u, ∇u, σ, ts, x₀s, dt)
+    Base.depwarn(
+        "`Σ_ode_rk4_forloop!` only existed for benchmark comparisons. Use the single interface `compute_Σ` instead.",
+        :Σ_ode_rk4_forloop!,
+    )
+
+    # Initialise
+    w_dest[:, 1] = x₀s
+    @inbounds for i = 1:(size(Σ_dest)[1])
+        Σ_dest[i] = zeros(d, d)
+        evals_dest[i, 1] = zeros(d)
+        θ_dest[i, 1] = zeros(d)
+
+        @inbounds for j = 2:length(ts)
+            # Euler's method
+            w_dest[i, j] = w_dest[i, j - 1] + dt * u(w_dest[i, j - 1], ts[j - 1])
+            Σ_dest[i, j] =
+                Σ_dest[i, j - 1] +
+                dt * (
+                    ∇u(w_dest[i, j - 1], ts[j - 1]) * Σ_dest[i, j - 1] +
+                    Σ_dest[i, j - 1] * transpose(∇u(w_dest[i, j - 1], ts[j - 1])) +
+                    σ(w_dest[i, j - 1], ts[j - 1]) * transpose(σ(w_dest[i, j - 1], ts[j - 1]))
+                )
+
+            # Compute stochastic sensitivity measures
+            E = eigen(Σ_dest[i, j]; sortby = λ -> (-real(λ), -imag(λ)))
+            evals_dest[i, j] = E.values
+            θ_dest[i, j] = atan.(E.vectors[2, :], E.vectors[1, :])
+        end
+    end
 end
