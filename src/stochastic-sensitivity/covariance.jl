@@ -3,48 +3,6 @@ using LinearAlgebra
 using DifferentialEquations
 using Parameters
 
-struct SDEModel
-    d::Int
-    u::Function
-    ∇u::Function
-    σ::Function
-end
-
-struct SpatioTemporalInfo
-    x₀s::AbstractVector
-    ts::AbstractVector
-    dt::Float64
-    dx::Float64
-end
-
-"""
-Stochastic sensitivity results for a fixed initial condition and time. Note that the initial
-condition and time are not stored in the struct, and so should be tracked elsewhere. Use the
-constructor below to automatically compute projected values.
-"""
-struct SSResults2D
-    w::Vector
-    Σ::Matrix
-    eigens::Vector
-    θs::Vector
-
-    function SSResults2D(w, Σ)
-        if !issymmetric(Σ)
-            ArgumentError("Covariance matrix Σ must be symmetric.")
-        end
-
-        E = eigen(Σ; sortby = λ -> (-real(λ), imag(λ)))
-
-        if any(E.values .< 0)
-            ArgumentError(
-                "Covariance matrix Σ must be positive semi-definite, but Σ has eigenvalues $(E.values).",
-            )
-        end
-
-        new(w, Σ, E.values, atan.(E.vectors[2, :], E.vectors[1, :]))
-    end
-end
-
 """
 compute_Σ!(
     w_dest,
@@ -61,7 +19,9 @@ Calculate a deterministc trajectory and corresponding covariance matrices, at ti
 ts, using one of several different methods.
 
 Available methods are:
-    - Flow map: Use the forwards version of the flow-map integral expression for
+    - flow map: Use the forwards version of the flow-map integral expression for Σ.
+    - backwards flow map: Use the backwards version of the flow map integral expression for Σ.
+    - ode rk4: Solve the ODE that Σ satisfies directly with the order-4 Runge-Kutta scheme.
 """
 function compute_Σ!(
     w_dest,
@@ -109,15 +69,28 @@ function compute_Σ!(
             eov = true,
             kwargs...,
         )
-    elseif method == "ode"
+    elseif method == "ode rk4"
         Σ_ode_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model, st_info; kwargs...)
-    elseif method == "ldl ode"
-        Σ_ldl_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model, st_info; kwargs...)
     else
         ArgumentError("Invalid method for computing Σ... got $(method)")
     end
 
     nothing
+end
+
+"""
+
+Out-of-place version of compute_Σ!, allocating and returning results.
+"""
+function compute_Σ(model::SDEModel, st_info::SpatioTemporalInfo, method; kwargs...)
+    w_dest = Array{Vector}(undef, length(st_info.x₀s), length(st_info.ts))
+    Σ_dest = Array{Matrix}(undef, length(st_info.x₀s), length(st_info.ts))
+    eval_dest = Array{Vector}(undef, length(st_info.x₀s), length(st_info.ts))
+    θ_dest = Array{Vector}(undef, length(st_info.x₀s), length(st_info.ts))
+
+    compute_Σ!(w_dest, Σ_dest, eval_dest, θ_dest, model, st_info, method; kwargs...)
+
+    return w_dest, Σ_dest, eval_dest, θ_dest
 end
 
 """
@@ -364,110 +337,4 @@ function Σ_ode_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model::SDEModel, st_in
         end
     end
     nothing
-end
-
-function Σ_ldl_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model::SDEModel, st_info::SpatioTemporalInfo)
-    @unpack d, u, ∇u, σ = model
-    @unpack ts, x₀s, dt = st_info
-
-    @inbounds for (j, x₀) in enumerate(x₀s)
-        w_dest[j, 1] = x₀
-        Σ_dest[j, 1] = zeros(d, d)
-        l = 1
-        D = zeros(2)
-        @inbounds for i = 2:length(ts)
-            # RK4 method
-            w_dest[j, i] = w_dest[j, i - 1] + dt * u(w_dest[j, i - 1], ts[i - 1])
-
-            f = (
-                ∇u(w_dest[j, i - 1], ts[i - 1]) * Σ_dest[i - 1] +
-                Σ_dest[i - 1] * ∇u(w_dest[j, i - 1], ts[i - 1])' +
-                σ(w_dest[j, i - 1], ts[i - 1]) * σ(w_dest[j, i - 1], ts[i - 1])'
-            )
-
-            if i == 1
-                # To ensure no undefined derivatives, use one step of the ODE for Σ
-                Σ_dest[i] = Σ_dest[i - 1] + dt * f
-            else
-                D[1] += dt * f[1, 1]
-                D[2] += dt * (f[2, 2] - 2 * l * f[1, 2] + l^2 * f[1, 1])
-                l += dt * (f[1, 2] - l * f[1, 1])
-
-                Σ_dest[i] = [1 0; l 1] * diagm(D) * [1 l; 0 1]
-            end
-
-            # Compute stochastic sensitivity measures
-            println(Σ_dest[i])
-            E = eigen(Σ_dest[i])
-            eval_dest[j, i] = E.values
-            θ_dest[j, i] = atan.(E.vectors[2, :], E.vectors[1, :])
-        end
-    end
-
-    nothing
-end
-
-function Σ_ode_rk4_vectorised!(w_dest, Σ_dest, evals_dest, θ_dest, d, u, ∇u, σ, ts, x₀s, dt)
-    Base.depwarn(
-        "`Σ_ode_rk4_vectorised!` only existed for benchmark comparisons. Use the single interface `compute_Σ` instead.",
-        :Σ_ode_rk4_vectorised!,
-    )
-    # Initialise
-    w_dest[:, 1] = x₀s
-    for i = 1:(size(Σ_dest)[1])
-        Σ_dest[i] = zeros(d, d)
-        evals_dest[i, 1] = zeros(d)
-        θ_dest[i, 1] = zeros(d)
-    end
-
-    for i = 2:length(ts)
-        # Euler's method
-        w_dest[:, i] = w_dest[:, i - 1] + dt * u.(w_dest[:, i - 1], ts[i - 1])
-        Σ_dest[:, i] =
-            Σ_dest[:, i - 1] +
-            dt * (
-                ∇u.(w_dest[:, i - 1], ts[i - 1]) .* Σ_dest[:, i - 1] +
-                Σ_dest[:, i - 1] .* transpose.(∇u.(w_dest[:, i - 1], ts[i - 1])) +
-                σ.(w_dest[:, i - 1], ts[i - 1]) .* transpose.(σ.(w_dest[:, i - 1], ts[i - 1]))
-            )
-
-        # Compute stochastic sensitivity measures
-        Es = eigen.(Σ_dest[:, i], sortby = λ -> (-real(λ), -imag(λ)))
-        get_vals = e -> e.values
-        evals_dest[:, i] = get_vals.(Es)
-        get_θ = e -> atan.(e.vectors[2, :], e.vectors[1, :])
-        θ_dest[:, i] = get_θ.(Es)
-    end
-end
-
-function Σ_ode_rk4_forloop!(w_dest, Σ_dest, evals_dest, θ_dest, d, u, ∇u, σ, ts, x₀s, dt)
-    Base.depwarn(
-        "`Σ_ode_rk4_forloop!` only existed for benchmark comparisons. Use the single interface `compute_Σ` instead.",
-        :Σ_ode_rk4_forloop!,
-    )
-
-    # Initialise
-    w_dest[:, 1] = x₀s
-    @inbounds for i = 1:(size(Σ_dest)[1])
-        Σ_dest[i] = zeros(d, d)
-        evals_dest[i, 1] = zeros(d)
-        θ_dest[i, 1] = zeros(d)
-
-        @inbounds for j = 2:length(ts)
-            # Euler's method
-            w_dest[i, j] = w_dest[i, j - 1] + dt * u(w_dest[i, j - 1], ts[j - 1])
-            Σ_dest[i, j] =
-                Σ_dest[i, j - 1] +
-                dt * (
-                    ∇u(w_dest[i, j - 1], ts[j - 1]) * Σ_dest[i, j - 1] +
-                    Σ_dest[i, j - 1] * transpose(∇u(w_dest[i, j - 1], ts[j - 1])) +
-                    σ(w_dest[i, j - 1], ts[j - 1]) * transpose(σ(w_dest[i, j - 1], ts[j - 1]))
-                )
-
-            # Compute stochastic sensitivity measures
-            E = eigen(Σ_dest[i, j]; sortby = λ -> (-real(λ), -imag(λ)))
-            evals_dest[i, j] = E.values
-            θ_dest[i, j] = atan.(E.vectors[2, :], E.vectors[1, :])
-        end
-    end
 end
