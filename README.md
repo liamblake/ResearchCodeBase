@@ -10,6 +10,8 @@ Within the main module `MPhil`, everything is loosely organised into submodules:
 
 - `StochasticSensitivity`: Computation of the stochastic sensitivity tools, first introduced by [Balasuriya (2020)](https://epubs.siam.org/doi/10.1137/18M1222922) and extended by [Blake, Maclean and Balasuriya (2023)](), for uncertainty quantification in differential equation models.
 
+- `Numerics`: Custom implementations of finite-difference approximations and numerical solvers of integrals and differential equations.
+
 - `OceanData`: Manipiulation and processing of oceanography data, e.g. geostrophic velocity data.
 
 - `Visualisation`: Tools for various visualisation of results with [`Makie.jl`](https://docs.makie.org/stable/).
