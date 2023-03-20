@@ -31,32 +31,6 @@ end
 
 @testset "Σ_calculation errors" begin end
 
-@testset "1D OU" begin
-    a = 1.0
-    σ = 1.0
-
-    u = (x, _, _) -> a * x
-    ∇u = (x, t) -> a
-    σf = (_, _, _) -> σ
-
-    x = -0.2
-    t = 1.0
-
-    Fe = exp(a * t) * x
-    ∇Fe = exp(a * t)
-    Σe = [σ^2 / (2 * a) * (exp(2 * a * t) - 1)]
-
-    # Test each method
-    for method in ["fd", "eov", "ode"]
-        # Test full w, Σ calculation
-        w, Σ = Σ_calculation(u, σf, x, 0, t, 0.001, 0.001; method = method, ∇u = ∇u)
-
-        @test isapprox(w, Fe, atol = 1e-0)
-        # TODO: Fix tolerances
-        @test_skip isapprox(Σ, Σe, atol = 1e-0)
-    end
-end
-
 @testset "OU calculations" begin
     """
     Tests the calculation of Σ with an OU process, for which Σ can be computed exactly. See the
@@ -65,9 +39,9 @@ end
     # Define OU process
     A = [1.0 0.0; 0.0 2.3]
     σ = [1.0 0.5; -0.2 1.4]
-    u = (x, _, _) -> A * x
+    u = (x, _) -> A * x
     ∇u = (x, t) -> A
-    σf = (_, _, _) -> σ
+    σf = (_, _) -> σ
 
     x = [1.1, -0.2]
     t = 1.5
@@ -81,12 +55,17 @@ end
     ]
 
     # Test each method
-    for method in ["fd", "eov", "ode"]
+    for method in ["flow map", "backwards flow map", "ode rk4"]
         # Test full w, Σ calculation
-        w, Σ = Σ_calculation(u, σf, x, 0, t, 0.001, 0.001; method = method, ∇u = ∇u)
+        w, Σ, _, _ = compute_Σ(
+            SDEModel(2, u, ∇u, σf),
+            SpatioTemporalInfo([x], 0:0.001:t, 0.001, 0.001),
+            method,
+        )
 
-        @test isapprox(w, Fe, atol = 1e-0)
-        # TODO: Fix tolerances
-        @test_skip isapprox(Σ, Σe, atol = 1e-0)
+        @test w[:, 1] == [x]
+        @test isapprox(w[1, end], Fe, atol = 1e-1)
+        @test Σ[:, 1] == [zeros(2, 2)]
+        @test isapprox(Σ[1, end], Σe, atol = 1e-1)
     end
 end
