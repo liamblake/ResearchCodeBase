@@ -257,7 +257,9 @@ function Σ_flow_map!(
             # Compute stochastic sensitivity
             E = eigen(Σ_dest[j, i]; sortby = λ -> (-real(λ), -imag(λ)))
             eval_dest[j, i] = E.values
-            θ_dest[j, i] = atan.(E.vectors[2, :], E.vectors[1, :])
+            if d == 2
+                θ_dest[j, i] = atan.(E.vectors[2, :], E.vectors[1, :])
+            end
         end
     end
     nothing
@@ -267,7 +269,7 @@ function Σ_ode_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model::SDEModel, st_in
     @unpack d, u, ∇u, σ = model
     @unpack ts, x₀s, dt = st_info
 
-    # Initialise
+    # Preallocate temp values
     kw1 = Vector{Float64}(undef, d)
     kw2 = Vector{Float64}(undef, d)
     kw3 = Vector{Float64}(undef, d)
@@ -333,7 +335,9 @@ function Σ_ode_rk4!(w_dest, Σ_dest, eval_dest, θ_dest, model::SDEModel, st_in
             # Compute stochastic sensitivity measures
             E = eigen(Σ_dest[i, j]; sortby = λ -> (-real(λ), -imag(λ)))
             eval_dest[i, j] = E.values
-            θ_dest[i, j] = atan.(E.vectors[2, :], E.vectors[1, :])
+            if d == 2
+                θ_dest[i, j] = atan.(E.vectors[2, :], E.vectors[1, :])
+            end
         end
     end
     nothing

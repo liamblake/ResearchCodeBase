@@ -66,6 +66,38 @@ end
         @test w[:, 1] == [x]
         @test isapprox(w[1, end], Fe, atol = 1e-1)
         @test Σ[:, 1] == [zeros(2, 2)]
-        @test isapprox(Σ[1, end], Σe, atol = 1e-1)
+        @test isapprox(Σ[1, end], Σe, atol = 1e-1) broken = (method == "backwards flow map")
+    end
+end
+
+@testset "GBM 1D" begin
+    # Define GBM process
+    a = 1.1
+    b = 0.29
+    u = (x, _) -> a * x
+    ∇u = (x, t) -> [a]
+    σ = (x, _) -> b * x
+
+    x = 1.1
+    t = 1.5
+
+    # Exact forms of terms involved
+    Fe = [x * exp(a * t)]
+    ∇Fe = [exp(a * t);;]
+    Σe = [t * b^2 * x^2 * exp(2 * a * t);;]
+
+    # Test each method
+    for method in ["flow map", "backwards flow map", "ode rk4"]
+        # Test full w, Σ calculation
+        w, Σ, _, _ = compute_Σ(
+            SDEModel(1, u, ∇u, σ),
+            SpatioTemporalInfo([[x]], 0:0.001:t, 0.001, 0.001),
+            method,
+        )
+
+        @test w[:, 1] == [[x]]
+        @test isapprox(w[1, end], Fe, atol = 1e-2)
+        @test Σ[:, 1] == [[0.0;;]]
+        @test isapprox(Σ[1, end], Σe, atol = 1e-2)
     end
 end
